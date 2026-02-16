@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viral Post Analyzer | Antigravity</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0F172A;
+            color: #F8FAFC;
+        }
+
+        .glass {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .harm-badge {
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .harm-health {
+            background: #10B981;
+            color: #fff;
+        }
+
+        .harm-ambition {
+            background: #3B82F6;
+            color: #fff;
+        }
+
+        .harm-relation {
+            background: #EC4899;
+            color: #fff;
+        }
+
+        .harm-money {
+            background: #F59E0B;
+            color: #fff;
+        }
+
+        .harm-other {
+            background: #64748B;
+            color: #fff;
+        }
+
+        /* Custom Scrollbar for Textarea */
+        textarea::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        textarea::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+
+        textarea::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+
+        textarea::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function App() {
+            // State
+            const [apiKey, setApiKey] = useState("");
+            const [models, setModels] = useState([]);
+            const [selectedModel, setSelectedModel] = useState("");
+            const [inputText, setInputText] = useState("");
+            const [isAnalyzing, setIsAnalyzing] = useState(false);
+            const [result, setResult] = useState(null);
+            const [error, setError] = useState(null);
+
+            // Load saved API key on mount
+            useEffect(() => {
+                const savedKey = localStorage.getItem('gemini_api_key');
+                if (savedKey) setApiKey(savedKey);
+            }, []);
+
+            // 1. Fetch Models
+            const fetchModels = async () => {
+                if (!apiKey) {
+                    alert("APIキーを入力してください！");
+                    return;
+                }
+                try {
+                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+                    if (!response.ok) throw new Error("APIキーが間違っているか、接続エラーです。");
+
+                    const data = await response.json();
+                    const usableModels = data.models.filter(m =>
+                        m.supportedGenerationMethods && m.supportedGenerationMethods.includes("generateContent")
+                    );
+
+                    // Prioritize Gemini models and sort
+                    usableModels.sort((a, b) => b.name.localeCompare(a.name));
+
+                    const formattedModels = usableModels.map(m => ({
+                        id: m.name.replace('models/', ''),
+                        name: `${m.displayName} (${m.name.replace('models/', '')})`
+                    }));
+
+                    setModels(formattedModels);
+                    if (formattedModels.length > 0) {
+                        // Auto-select flash or pro if available, otherwise first
+                        const defaultModel = formattedModels.find(m => m.id.includes('flash')) || formattedModels[0];
+                        setSelectedModel(defaultModel.id);
+                    }
+
+                    // Save key
+                    localStorage.setItem('gemini_api_key', apiKey);
+                    setError(null);
+
+                } catch (e) {
+                    console.error(e);
+                    setError(e.message);
+                }
+            };
+
+            // 2. Analyze Post
+            const analyzePost = async () => {
+                if (!inputText.trim() || !apiKey || !selectedModel) return;
+                setIsAnalyzing(true);
+                setError(null);
+                setResult(null);
+
+                const systemPrompt = `
+あなたはSNSマーケティングのプロです。入力された投稿を分析し、**厳密なJSON形式のみ**で出力してください。
+Markdownのコードブロック（\`\`\`json ... \`\`\`）は不要です。純粋なJSON文字列だけを返してください。
+
+【分析観点】
+1. viralScore: 0-100のバズりポテンシャルスコア（推定）
+2. harmType: 以下のいずれか (Health, Ambition, Relation, Money, Other)
+3. structure: "ストーリー型", "ノウハウ型", "対立煽り型" などの構造分類
+4. keyHooks: 読者を惹きつけた心理的フックの要素（3つ程度）
+5. improvement: さらに伸ばすための具体的な改善案（Risu Style: 丁寧だが指摘は鋭く、絵文字なし）
+
+【出力フォーマット】
+{
+  "viralScore": 85,
+  "harmType": "Money",
+  "structure": "非常識な成功法則型",
+  "keyHooks": ["損失回避", "権威性", "簡易性"],
+  "improvement": "冒頭の2行目で..."
+}
+`;
+
+                try {
+                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{
+                                parts: [{ text: systemPrompt + "\n\n【分析対象の投稿】\n" + inputText }]
+                            }]
+                        })
+                    });
+
+                    if (!response.ok) throw new Error("生成エラーが発生しました。");
+
+                    const data = await response.json();
+                    let rawText = data.candidates[0].content.parts[0].text;
+
+                    // Clean up markdown code blocks if present
+                    rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+                    const jsonResult = JSON.parse(rawText);
+                    setResult(jsonResult);
+
+                } catch (e) {
+                    console.error(e);
+                    setError("分析に失敗しました。もう一度試してください。\n" + e.message);
+                } finally {
+                    setIsAnalyzing(false);
+                }
+            };
+
+            return (
+                <div className="container mx-auto px-4 py-8 max-w-3xl">
+                    <header className="flex justify-between items-center mb-10">
+                        <div className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">
+                            Viral Post Analyzer <span className="text-xs text-slate-500 ml-2">v1.0</span>
+                        </div>
+                        <div className="text-sm text-slate-400">Powered by Gemini API</div>
+                    </header>
+
+                    <div className="grid gap-8">
+                        {/* API Config Section */}
+                        <section className="glass rounded-2xl p-6 shadow-xl border-l-4 border-cyan-500">
+                            <h3 className="text-white font-bold mb-4 flex items-center gap-2">
+                                <span>🔑</span> API Connection
+                            </h3>
+                            <div className="flex gap-2 mb-4">
+                                <input
+                                    type="password"
+                                    className="flex-1 bg-slate-900/50 border border-slate-700 rounded-lg p-2 text-white"
+                                    placeholder="API Key (AIza...)"
+                                    value={apiKey}
+                                    onChange={(e) => setApiKey(e.target.value)}
+                                />
+                                <button
+                                    onClick={fetchModels}
+                                    className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg font-bold transition"
+                                >
+                                    Connect
+                                </button>
+                            </div>
+                            {models.length > 0 && (
+                                <select
+                                    className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-2 text-white"
+                                    value={selectedModel}
+                                    onChange={(e) => setSelectedModel(e.target.value)}
+                                >
+                                    {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                </select>
+                            )}
+                            {error && <p className="text-red-400 text-sm mt-2">{error}</p>}
+                        </section>
+
+                        {/* Input Section */}
+                        <section className="glass rounded-2xl p-6 shadow-xl">
+                            <label className="block text-sm font-medium text-slate-300 mb-2">
+                                分析したい投稿（X / Threads）を貼り付けてください
+                            </label>
+                            <textarea
+                                className="w-full h-40 bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:outline-none transition"
+                                placeholder="例：AIを使って月5万稼ぐ方法。実は... (ここにテキストをペースト)"
+                                value={inputText}
+                                onChange={(e) => setInputText(e.target.value)}
+                            ></textarea>
+                            <button
+                                onClick={analyzePost}
+                                disabled={isAnalyzing || !inputText.trim() || !selectedModel}
+                                className={`mt-4 w-full py-3 rounded-xl font-bold text-white transition transform hover:scale-[1.02] ${isAnalyzing || !selectedModel
+                                    ? "bg-slate-600 cursor-not-allowed"
+                                    : "bg-gradient-to-r from-cyan-500 to-blue-600 hover:shadow-lg hover:shadow-cyan-500/30"
+                                    }`}
+                            >
+                                {isAnalyzing ? "AIが分析中..." : "分析する (Analyze)"}
+                            </button>
+                        </section>
+
+                        {/* Result Section */}
+                        {result && (
+                            <section className="glass rounded-2xl p-6 border-cyan-500/30 shadow-2xl animate-fade-in-up">
+                                <div className="flex justify-between items-start mb-6">
+                                    <div>
+                                        <h2 className="text-xl font-bold text-white mb-1">Analysis Result</h2>
+                                        <p className="text-sm text-slate-400">AIによる投稿診断レポート</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="text-xs text-slate-400 uppercase tracking-widest">Viral Potential</div>
+                                        <div className="text-3xl font-black text-cyan-400">{result.viralScore}<span className="text-sm text-slate-600">/100</span></div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4 mb-6">
+                                    <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                                        <div className="text-xs text-slate-400 mb-1">HARMジャンル</div>
+                                        <span className={`harm-badge harm-${result.harmType ? result.harmType.toLowerCase() : 'other'}`}>
+                                            {result.harmType || 'Other'}
+                                        </span>
+                                    </div>
+                                    <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                                        <div className="text-xs text-slate-400 mb-1">文章構造</div>
+                                        <div className="font-bold text-slate-200">{result.structure}</div>
+                                    </div>
+                                </div>
+
+                                <div className="mb-6">
+                                    <div className="text-sm font-bold text-slate-300 mb-2">フックの要素 (Why it works)</div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {result.keyHooks && result.keyHooks.map((hook, i) => (
+                                            <span key={i} className="bg-slate-700/50 text-slate-300 px-3 py-1 rounded-lg text-sm border border-slate-600">
+                                                #{hook}
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="bg-indigo-900/20 border border-indigo-500/30 p-4 rounded-xl">
+                                    <div className="flex items-start gap-3">
+                                        <div className="text-xl">💡</div>
+                                        <div>
+                                            <div className="text-sm font-bold text-indigo-300 mb-1">AIからの改善アドバイス</div>
+                                            <p className="text-sm text-indigo-100 leading-relaxed">
+                                                {result.improvement}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+
+</html>
